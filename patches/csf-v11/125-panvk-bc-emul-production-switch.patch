@@ -1,0 +1,51 @@
+From: ZCode <zcode@local>
+Subject: [PATCH csf-v11 125] panvk: select BCn emulation without the debug channel
+
+Purpose: make driver-level BCn emulation a production-selectable feature on
+hardware without BC texturing (Mali). Today the only gate is
+PANVK_DEBUG=bc_emul, which also enables the rest of the debug channel, so the
+launcher cannot turn on driver-level BC without turning on debug behaviour.
+PANVK_BC_EMUL=1 enables exactly this one feature. The hardware requirement
+(BC must actually be missing) is unchanged, so devices with real BC texturing
+ignore the switch and keep has_texture_compression_bc() behaviour.
+
+Why this is the precondition for "BC at the driver level": with the gate off,
+panvk_bc_emul_enabled() is false, so
+ - get_physical_device_features() reports textureCompressionBC = false, and
+ - get_image_plane_format_features() returns 0 for every BC format.
+The guest therefore never creates BC images and the driver's BC path is never
+reached; the payload's remap is the only thing keeping BC working. Enabling
+this switch is what lets raw BC resources reach PanVK.
+
+Dependencies: csf-v11/019, csf-v11/021, csf-v11/022 (124 does not touch this
+function; it only reads panvk_bc_emul_enabled() for a debug print at
+panvk_cmd_copy / meta path).
+
+Apply/verify note: this is a candidate patch, not applied or compiled here.
+Apply on top of the 022-applied pinned tree (Mesa 5a07217f...) with
+`git apply`, then build with scripts/build-android.sh. If the compiler reports
+an implicit declaration of getenv, add `#include <stdlib.h>` to
+panvk_physical_device.c (Mesa files normally receive it via util headers).
+
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -1756,11 +1756,18 @@ format_is_supported(struct panvk_physical_device *physical_device,
+    return true;
+ }
+ 
+ bool
+ panvk_bc_emul_enabled(const struct panvk_physical_device *physical_device)
+ {
+-   if (!PANVK_DEBUG(BC_EMUL))
++   /* Driver-level BCn emulation is a product feature on hardware without BC
++    * texturing, so it must be selectable without the catch-all debug channel
++    * (PANVK_DEBUG=bc_emul still works). PANVK_BC_EMUL=1 enables exactly this
++    * feature; the "hardware really lacks BC" test below is unchanged. */
++   const char *env = getenv("PANVK_BC_EMUL");
++   const bool requested =
++      PANVK_DEBUG(BC_EMUL) || (env && env[0] == '1' && env[1] == '\0');
++   if (!requested)
+       return false;
+ 
+    const struct pan_format fmt =
+       physical_device->formats.all[PIPE_FORMAT_DXT1_RGBA];
